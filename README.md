@@ -70,24 +70,40 @@ Requires ESP-IDF v5.x.
 
 ## MQTT contract
 
-Shared with `pump-controller`. Changing either side requires changing both.
+Defined in [MQTT_CONTRACT.md](MQTT_CONTRACT.md), which is mirrored in every
+repository of this system. `pump-ctl` and `archimedes-server` both parse this
+topic, so changing a field here means changing it in all three.
 
 **Publishes** to `watertank/tank-01/level` — QoS 0, **not retained**:
 
 ```json
-{"event":"level","device":"tank-01","distance_cm":62.5,
- "valid":true,"uptime_s":360}
+{"event":"level","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
+ "valid":true,"distance_cm":62.5,"uptime_s":360}
 ```
 
 Sensor unreadable:
 
 ```json
-{"event":"level","device":"tank-01","distance_cm":null,
- "valid":false,"reason":"sensor_unreadable","uptime_s":360}
+{"event":"level","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
+ "valid":false,"distance_cm":null,"reason":"sensor_unreadable","uptime_s":360}
+```
+
+Last will, carrying neither `timestamp` nor `uptime_s` because the broker
+publishes it on this node's behalf long after the node wrote it:
+
+```json
+{"event":"level","device":"tank-01","valid":false,"distance_cm":null,
+ "reason":"node_offline"}
 ```
 
 `distance_cm` is measured from the sensor face downward and *decreases* as the
-tank fills.
+tank fills. It is `null` whenever `valid` is false — never `0`, which would
+read downstream as a tank filled to the sensor.
+
+`timestamp` is UTC, and is present only once SNTP has landed. The board has no
+battery-backed RTC, so stamping every event before that would put 1970 in the
+server's database; the field is omitted instead and the consumer falls back to
+its own receipt time. The clock never gates a reading or a publish.
 
 Not retained on purpose. A retained level reading is by definition old, but it
 arrives the instant a subscriber connects, so arrival-time freshness would
@@ -102,6 +118,7 @@ score it as current.
 | `LEVEL_PUBLISH_MS` | 5000 | Controller's `LEVEL_STALE_MS` must be a multiple |
 | `DIST_MIN_VALID_CM` | 3.0 | Below the transducer blind zone |
 | `DIST_MAX_VALID_CM` | 400.0 | Sensor range limit |
+| `SNTP_SERVER` | pool.ntp.org | Source of the UTC `timestamp` field |
 
 This stream is a control input, not just telemetry, which is why it runs far
 faster than a reporting interval would need. Slowing it down without widening

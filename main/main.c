@@ -7,6 +7,7 @@
 #include "config.h"
 #include "level_sensor.h"
 #include "telemetry.h"
+#include "wallclock.h"
 
 static const char *TAG = "main";
 
@@ -48,6 +49,10 @@ void app_main(void)
 
     level_sensor_init();
     telemetry_start();
+
+    /* After the network is up, and never waited on: an unsynced clock
+     * costs the timestamp field, not a reading. */
+    wallclock_start();
 
     xTaskCreate(level_task, "level", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "tank node up");

@@ -19,6 +19,14 @@
  * interval. The controller's stale window must be a multiple of this. */
 #define LEVEL_PUBLISH_MS 5000
 
+/* ======================= clock ======================= */
+
+/* Events carry a UTC timestamp once SNTP has landed; see
+ * MQTT_CONTRACT.md. Until then the field is simply absent and the
+ * consumer falls back to its own receipt time. The clock never gates a
+ * reading or a publish. */
+#define SNTP_SERVER "pool.ntp.org"
+
 /* ======================= network ======================= */
 
 #if __has_include("secrets.h")
@@ -27,4 +35,6 @@
 #error "Copy main/secrets.h.example to main/secrets.h and fill in credentials"
 #endif
 
+/* The level stream. Its payload is fixed by MQTT_CONTRACT.md, which
+ * pump-ctl and archimedes-server parse against. */
 #define TOPIC_LEVEL "watertank/" DEVICE_ID "/level"
