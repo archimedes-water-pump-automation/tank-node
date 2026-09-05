@@ -14,18 +14,18 @@
 
 /* ======================= tank geometry ======================= */
 
-/* The thresholds the pump controller acts on. They used to live in its
+/* The one threshold the pump controller acts on. It used to live in its
  * config, applied to a distance it received; it no longer sees a
- * distance, so they live here with the sensor that produces one, and
+ * distance, so it lives here with the sensor that produces one, and
  * this node publishes the derived state instead. See tank_state.h.
  *
- * Both depend on where the transducer is physically mounted. Measure
- * from the sensor face to the intended stop level and add margin.
+ * There is no second, lower threshold: the controller starts its pump
+ * from the flow sensor alone, so no level ever starts it and there is
+ * no restart threshold to set.
  *
- * Two thresholds, not one: a single one makes the pump relay chatter as
- * the water surface moves across it. */
-#define DIST_FULL_CM     12.0f   /* <= this: full, the pump must stop   */
-#define DIST_REFILL_CM   35.0f   /* >= this: low enough to start again  */
+ * It depends on where the transducer is physically mounted. Measure
+ * from the sensor face to the intended stop level and add margin. */
+#define DIST_FULL_CM     12.0f   /* <= this: full, the pump must stop */
 
 /* ======================= publish cadence ======================= */
 

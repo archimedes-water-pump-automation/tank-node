@@ -6,8 +6,9 @@ sensor and publishes it over MQTT.
 It reads, it publishes, it reports failure honestly. It also owns the one
 decision that depends on the reading: whether the tank is full. The pump
 controller receives that decision on its own topic and never sees a distance,
-so the thresholds behind it exist in exactly one place — here, beside the
-sensor. Everything about *the pump* still lives in
+so the threshold behind it exists in exactly one place — here, beside the
+sensor. Full is the only thing it reports, because a full tank is the only
+thing about the tank the pump acts on: nothing here ever starts a pump. Everything about *the pump* still lives in
 [`pump-ctl`](https://github.com/archimedes-water-pump-automation/pump-ctl).
 
 ## Why this is a separate board
@@ -38,11 +39,10 @@ interval.
   single bad sample must not move the pump.
 - **Range gate.** Values outside `DIST_MIN_VALID_CM`–`DIST_MAX_VALID_CM` are
   rejected. The lower bound clears the transducer's blind zone.
-- **Hysteresis.** The tank is `full` at `DIST_FULL_CM` and only `refillable`
-  again at the further `DIST_REFILL_CM`; between them it is `partial`, where a
-  running pump keeps running and an idle one stays idle. One threshold instead
-  of two would make the pump relay chatter as the water surface moves across
-  it.
+- **One threshold, one question.** The tank is `full` at or below
+  `DIST_FULL_CM` and `not_full` above it. There is no second, lower threshold,
+  because there is nothing for it to do: the pump starts from its own flow
+  sensor, so no level ever starts it.
 - **Failure is published, not hidden.** Fewer than 3 good pings publishes
   `valid:false` on the level topic and `state:"unknown"` on the full_tank
   topic. Silence and a bad reading must not look the same downstream.
@@ -117,18 +117,19 @@ by `pump-ctl`, derived from the same reading:
 
 ```json
 {"event":"full_tank","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
- "state":"refillable","uptime_s":360}
+ "state":"not_full","uptime_s":360}
 ```
 
 | `state` | Means | What the controller does |
 |---|---|---|
-| `full` | `distance_cm <= DIST_FULL_CM` | Stops the pump, releases the supply valve |
-| `partial` | Between the thresholds | Nothing: running stays running, idle stays idle |
-| `refillable` | `distance_cm >= DIST_REFILL_CM` | May start, once inflow is confirmed |
+| `full` | `distance_cm <= DIST_FULL_CM` | Stops the pump and releases the supply valve; blocks a start until it clears |
+| `not_full` | There is room | Nothing on its own — a start needs confirmed inflow at the flow sensor |
 | `unknown` | Sensor unreadable, or this node is gone | Faults, pump held off |
 
 No distance appears on this topic. The controller is told what the tank *is*,
-not what it measures.
+not what it measures — and only ever stops on it. A tank that has drained is
+not a reason to run a pump; water arriving in the pipeline is, and only the
+flow sensor sees that.
 
 Last will, carrying neither `timestamp` nor `uptime_s` because the broker
 publishes it on this node's behalf long after the node wrote it:
@@ -159,14 +160,13 @@ its own receipt time. The clock never gates a reading or a publish.
 | `DIST_MIN_VALID_CM` | 3.0 | Below the transducer blind zone |
 | `DIST_MAX_VALID_CM` | 400.0 | Sensor range limit |
 | `DIST_FULL_CM` | 12.0 | At or below this the tank is `full`. Must clear the transducer blind zone |
-| `DIST_REFILL_CM` | 35.0 | At or above this the tank is `refillable` |
 | `SNTP_SERVER` | pool.ntp.org | Source of the UTC `timestamp` field |
 
-`DIST_FULL_CM` and `DIST_REFILL_CM` depend on where the transducer is
-physically mounted. Measure from the sensor face to the intended stop level
-and add margin. They used to live in the pump controller's config, applied to
-a distance it received; the controller no longer sees a distance, so they live
-here, and changing them changes the system's behaviour from one place.
+`DIST_FULL_CM` depends on where the transducer is physically mounted. Measure
+from the sensor face to the intended stop level and add margin. It used to
+live in the pump controller's config, applied to a distance it received; the
+controller no longer sees a distance, so it lives here, and changing it
+changes the system's behaviour from one place.
 
 The full_tank stream is a control input, not just telemetry, which is why one
 reading every 5 s is far faster than a reporting interval would need. Slowing

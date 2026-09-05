@@ -12,19 +12,15 @@ tank_state_t tank_state_from_distance(float distance_cm, bool valid)
     if (distance_cm <= DIST_FULL_CM) {
         return TANK_FULL;
     }
-    if (distance_cm >= DIST_REFILL_CM) {
-        return TANK_REFILLABLE;
-    }
 
-    return TANK_PARTIAL;
+    return TANK_NOT_FULL;
 }
 
 const char *tank_state_name(tank_state_t state)
 {
     switch (state) {
-        case TANK_FULL:       return "full";
-        case TANK_PARTIAL:    return "partial";
-        case TANK_REFILLABLE: return "refillable";
-        default:              return "unknown";
+        case TANK_FULL:     return "full";
+        case TANK_NOT_FULL: return "not_full";
+        default:            return "unknown";
     }
 }
