@@ -3,8 +3,13 @@
 ESP32-C3 firmware that measures water level in a tank with an ultrasonic
 sensor and publishes it over MQTT.
 
-Deliberately dumb: it reads, it publishes, it reports failure honestly. All
-pump logic lives in [`pump-controller`](../pump-controller).
+It reads, it publishes, it reports failure honestly. It also owns the one
+decision that depends on the reading: whether the tank is full. The pump
+controller receives that decision on its own topic and never sees a distance,
+so the threshold behind it exists in exactly one place — here, beside the
+sensor. Full is the only thing it reports, because a full tank is the only
+thing about the tank the pump acts on: nothing here ever starts a pump. Everything about *the pump* still lives in
+[`pump-ctl`](https://github.com/archimedes-water-pump-automation/pump-ctl).
 
 ## Why this is a separate board
 
@@ -20,18 +25,32 @@ why the controller enforces a staleness timeout.
 
 ## Behaviour
 
-Every `LEVEL_PUBLISH_MS` (5 s), the node takes up to 5 ultrasonic readings,
-publishes the median, and sleeps the remainder of the interval.
+Every `LEVEL_PUBLISH_MS` (5 s), the node takes up to 5 ultrasonic readings and
+publishes the median twice — as a distance to `archimedes-server`, and as the
+state derived from it to `pump-ctl` — then sleeps the remainder of the
+interval.
+
+- **Two topics, two audiences.** The server stores measurements; the
+  controller acts on decisions. Sending the raw distance to the controller as
+  well would let it apply a second copy of the thresholds below, free to drift
+  from these, with no way to tell which copy had drifted.
 
 - **Median filter.** Readings off a moving water surface are noisy, and a
   single bad sample must not move the pump.
 - **Range gate.** Values outside `DIST_MIN_VALID_CM`–`DIST_MAX_VALID_CM` are
   rejected. The lower bound clears the transducer's blind zone.
+- **One threshold, one question.** The tank is `full` at or below
+  `DIST_FULL_CM` and `not_full` above it. There is no second, lower threshold,
+  because there is nothing for it to do: the pump starts from its own flow
+  sensor, so no level ever starts it.
 - **Failure is published, not hidden.** Fewer than 3 good pings publishes
-  `valid:false`. Silence and a bad reading must not look the same downstream.
+  `valid:false` on the level topic and `state:"unknown"` on the full_tank
+  topic. Silence and a bad reading must not look the same downstream.
 - **Last will.** If the node drops off uncleanly the broker publishes
-  `valid:false`, so the controller reacts in one cycle rather than waiting out
-  its 20 s stale timer.
+  `state:"unknown"` on the full_tank topic, so the controller reacts in one
+  cycle rather than waiting out its 20 s stale timer. MQTT allows one will per
+  connection and this is the one worth having: that stream holds a pump off,
+  while a level that stops arriving only means a volume stops updating.
 
 ## Hardware
 
@@ -70,28 +89,66 @@ Requires ESP-IDF v5.x.
 
 ## MQTT contract
 
-Shared with `pump-controller`. Changing either side requires changing both.
+Defined in [MQTT_CONTRACT.md](MQTT_CONTRACT.md), which is mirrored in every
+repository of this system. Each topic has exactly one consumer, so changing a
+field means changing it in two places.
 
-**Publishes** to `watertank/tank-01/level` — QoS 0, **not retained**:
+**Publishes** to `watertank/tank-01/level` — QoS 0, **not retained**, read by
+`archimedes-server`:
 
 ```json
-{"event":"level","device":"tank-01","distance_cm":62.5,
- "valid":true,"uptime_s":360}
+{"event":"level","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
+ "valid":true,"distance_cm":62.5,"uptime_s":360}
 ```
 
 Sensor unreadable:
 
 ```json
-{"event":"level","device":"tank-01","distance_cm":null,
- "valid":false,"reason":"sensor_unreadable","uptime_s":360}
+{"event":"level","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
+ "valid":false,"distance_cm":null,"reason":"sensor_unreadable","uptime_s":360}
 ```
 
 `distance_cm` is measured from the sensor face downward and *decreases* as the
-tank fills.
+tank fills. It is `null` whenever `valid` is false — never `0`, which would
+read downstream as a tank filled to the sensor.
 
-Not retained on purpose. A retained level reading is by definition old, but it
-arrives the instant a subscriber connects, so arrival-time freshness would
-score it as current.
+**Publishes** to `watertank/tank-01/full_tank` — QoS 0, **not retained**, read
+by `pump-ctl`, derived from the same reading:
+
+```json
+{"event":"full_tank","device":"tank-01","timestamp":"2026-09-05T03:10:12Z",
+ "state":"not_full","uptime_s":360}
+```
+
+| `state` | Means | What the controller does |
+|---|---|---|
+| `full` | `distance_cm <= DIST_FULL_CM` | Stops the pump and releases the supply valve; blocks a start until it clears |
+| `not_full` | There is room | Nothing on its own — a start needs confirmed inflow at the flow sensor |
+| `unknown` | Sensor unreadable, or this node is gone | Faults, pump held off |
+
+No distance appears on this topic. The controller is told what the tank *is*,
+not what it measures — and only ever stops on it. A tank that has drained is
+not a reason to run a pump; water arriving in the pipeline is, and only the
+flow sensor sees that.
+
+Last will, carrying neither `timestamp` nor `uptime_s` because the broker
+publishes it on this node's behalf long after the node wrote it:
+
+```json
+{"event":"full_tank","device":"tank-01","state":"unknown",
+ "reason":"node_offline"}
+```
+
+Both streams are published every cycle rather than only on a change: the
+controller faults when the full_tank stream goes stale, so it is the silence
+that has to be detectable, not just the transition. Neither is retained — a
+retained reading is by definition old, but it arrives the instant a subscriber
+connects, so arrival-time freshness would score it as current.
+
+`timestamp` is UTC, and is present only once SNTP has landed. The board has no
+battery-backed RTC, so stamping every event before that would put 1970 in the
+server's database; the field is omitted instead and the consumer falls back to
+its own receipt time. The clock never gates a reading or a publish.
 
 ## Configuration
 
@@ -99,13 +156,22 @@ score it as current.
 
 | Constant | Default | Notes |
 |---|---|---|
-| `LEVEL_PUBLISH_MS` | 5000 | Controller's `LEVEL_STALE_MS` must be a multiple |
+| `LEVEL_PUBLISH_MS` | 5000 | Controller's `TANK_STALE_MS` must be a multiple |
 | `DIST_MIN_VALID_CM` | 3.0 | Below the transducer blind zone |
 | `DIST_MAX_VALID_CM` | 400.0 | Sensor range limit |
+| `DIST_FULL_CM` | 12.0 | At or below this the tank is `full`. Must clear the transducer blind zone |
+| `SNTP_SERVER` | pool.ntp.org | Source of the UTC `timestamp` field |
 
-This stream is a control input, not just telemetry, which is why it runs far
-faster than a reporting interval would need. Slowing it down without widening
-`LEVEL_STALE_MS` on the controller will cause spurious faults.
+`DIST_FULL_CM` depends on where the transducer is physically mounted. Measure
+from the sensor face to the intended stop level and add margin. It used to
+live in the pump controller's config, applied to a distance it received; the
+controller no longer sees a distance, so it lives here, and changing it
+changes the system's behaviour from one place.
+
+The full_tank stream is a control input, not just telemetry, which is why one
+reading every 5 s is far faster than a reporting interval would need. Slowing
+it down without widening `TANK_STALE_MS` on the controller will cause spurious
+faults.
 
 ## Known gaps
 

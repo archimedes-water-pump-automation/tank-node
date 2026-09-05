@@ -6,10 +6,16 @@
 
 #include "config.h"
 #include "level_sensor.h"
+#include "tank_state.h"
 #include "telemetry.h"
+#include "wallclock.h"
 
 static const char *TAG = "main";
 
+/* One reading, two audiences: the measurement goes to the server, the
+ * state derived from it goes to the pump controller. Deriving it here
+ * is the point — the controller no longer sees a distance, so there is
+ * only one place a threshold can live. */
 static void level_task(void *arg)
 {
     (void)arg;
@@ -20,13 +26,16 @@ static void level_task(void *arg)
         float dist_cm = 0.0f;
         bool  ok = level_sensor_read_cm(&dist_cm);
 
+        tank_state_t state = tank_state_from_distance(dist_cm, ok);
+
         if (ok) {
-            ESP_LOGD(TAG, "%.1f cm", dist_cm);
+            ESP_LOGD(TAG, "%.1f cm (%s)", dist_cm, tank_state_name(state));
         } else {
             ESP_LOGW(TAG, "sensor unreadable");
         }
 
         telemetry_publish_level(dist_cm, ok);
+        telemetry_publish_tank_state(state);
 
         /* Reading takes a few hundred ms; hold the publish cadence
          * steady so the controller's stale window stays meaningful. */
@@ -48,6 +57,10 @@ void app_main(void)
 
     level_sensor_init();
     telemetry_start();
+
+    /* After the network is up, and never waited on: an unsynced clock
+     * costs the timestamp field, not a reading. */
+    wallclock_start();
 
     xTaskCreate(level_task, "level", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "tank node up");
