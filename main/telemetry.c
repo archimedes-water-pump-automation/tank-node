@@ -21,16 +21,21 @@ static esp_mqtt_client_handle_t s_client;
 static volatile bool            s_connected;
 
 /* Delivered by the broker if this node drops off without a clean
- * disconnect. The pump controller sees valid:false and stops, rather
- * than coasting on the last good reading until its stale timer fires.
+ * disconnect. The pump controller sees state:"unknown" and stops,
+ * rather than coasting on the last good state until its stale timer
+ * fires.
+ *
+ * MQTT allows one will per connection, and this is the one worth
+ * having: the full_tank stream is what holds a pump off, while a level
+ * that stops arriving only means the server's volume stops updating.
  *
  * It carries no timestamp and no uptime: the broker publishes it on
  * this node's behalf, long after the node wrote it, so both fields
  * would be lies. MQTT_CONTRACT.md makes them optional for exactly
  * this case. */
 static const char *LWT_PAYLOAD =
-    "{\"event\":\"level\",\"device\":\"" DEVICE_ID "\",\"valid\":false,"
-    "\"distance_cm\":null,\"reason\":\"node_offline\"}";
+    "{\"event\":\"full_tank\",\"device\":\"" DEVICE_ID "\","
+    "\"state\":\"unknown\",\"reason\":\"node_offline\"}";
 
 bool telemetry_online(void)
 {
@@ -108,6 +113,40 @@ void telemetry_publish_level(float distance_cm, bool valid)
                             (int)off, 0, 0, true);
 }
 
+void telemetry_publish_tank_state(tank_state_t state)
+{
+    char   payload[224];
+    size_t off = 0;
+
+    if (!s_connected || s_client == NULL) {
+        return;
+    }
+
+    json_open_envelope(payload, sizeof(payload), &off, "full_tank");
+    json_append(payload, sizeof(payload), &off, ",\"state\":\"%s\"",
+                tank_state_name(state));
+
+    if (state == TANK_UNKNOWN) {
+        json_append(payload, sizeof(payload), &off,
+                    ",\"reason\":\"sensor_unreadable\"");
+    }
+
+    json_append(payload, sizeof(payload), &off, ",\"uptime_s\":%lu}",
+                (unsigned long)(esp_timer_get_time() / 1000000));
+
+    if (off >= sizeof(payload)) {
+        ESP_LOGE(TAG, "full_tank payload truncated at %u bytes, not published",
+                 (unsigned)sizeof(payload));
+        return;
+    }
+
+    /* QoS 0, not retained, for the same reason as the level stream: a
+     * queued or retained state that arrives late would be treated as
+     * current, and this one holds a pump off. */
+    esp_mqtt_client_enqueue(s_client, TOPIC_FULL_TANK, payload,
+                            (int)off, 0, 0, true);
+}
+
 static void mqtt_event_handler(void *arg, esp_event_base_t base,
                                int32_t event_id, void *event_data)
 {
@@ -173,7 +212,7 @@ void telemetry_start(void)
         .credentials.username                = MQTT_USERNAME,
         .credentials.client_id               = DEVICE_ID,
         .credentials.authentication.password = MQTT_PASSWORD,
-        .session.last_will.topic             = TOPIC_LEVEL,
+        .session.last_will.topic             = TOPIC_FULL_TANK,
         .session.last_will.msg               = LWT_PAYLOAD,
         .session.last_will.msg_len           = 0,
         .session.last_will.qos               = 1,

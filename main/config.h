@@ -12,11 +12,28 @@
 #define DIST_MIN_VALID_CM   3.0f
 #define DIST_MAX_VALID_CM 400.0f
 
+/* ======================= tank geometry ======================= */
+
+/* The thresholds the pump controller acts on. They used to live in its
+ * config, applied to a distance it received; it no longer sees a
+ * distance, so they live here with the sensor that produces one, and
+ * this node publishes the derived state instead. See tank_state.h.
+ *
+ * Both depend on where the transducer is physically mounted. Measure
+ * from the sensor face to the intended stop level and add margin.
+ *
+ * Two thresholds, not one: a single one makes the pump relay chatter as
+ * the water surface moves across it. */
+#define DIST_FULL_CM     12.0f   /* <= this: full, the pump must stop   */
+#define DIST_REFILL_CM   35.0f   /* >= this: low enough to start again  */
+
 /* ======================= publish cadence ======================= */
 
-/* The pump controller uses this stream as a control input, not just
- * telemetry, so it runs far faster than the original 30 s reporting
- * interval. The controller's stale window must be a multiple of this. */
+/* One reading feeds both topics, so this is the cadence of both. The
+ * full_tank stream is a control input for the pump controller, not just
+ * telemetry, which is why it runs far faster than a reporting interval
+ * would need: the controller's stale window must be a multiple of it,
+ * and a slower cadence there means spurious faults. */
 #define LEVEL_PUBLISH_MS 5000
 
 /* ======================= clock ======================= */
@@ -35,6 +52,14 @@
 #error "Copy main/secrets.h.example to main/secrets.h and fill in credentials"
 #endif
 
-/* The level stream. Its payload is fixed by MQTT_CONTRACT.md, which
- * pump-ctl and archimedes-server parse against. */
-#define TOPIC_LEVEL "watertank/" DEVICE_ID "/level"
+/* Two topics, two audiences, both fixed by MQTT_CONTRACT.md.
+ *
+ * The level stream carries the measurement and is read by
+ * archimedes-server, which turns it into a volume.
+ *
+ * The full_tank stream carries only the derived state — no distance —
+ * and is read by pump-ctl, which acts on it. A controller that cannot
+ * see a raw distance cannot apply a threshold of its own that has
+ * drifted from this node's. */
+#define TOPIC_LEVEL     "watertank/" DEVICE_ID "/level"
+#define TOPIC_FULL_TANK "watertank/" DEVICE_ID "/full_tank"

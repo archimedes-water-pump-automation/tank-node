@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "level_sensor.c" "telemetry.c" "wallclock.c"
+    SRCS "main.c" "level_sensor.c" "tank_state.c" "telemetry.c" "wallclock.c"
     INCLUDE_DIRS "."
     REQUIRES driver esp_wifi esp_event nvs_flash mqtt esp_timer lwip
 )
